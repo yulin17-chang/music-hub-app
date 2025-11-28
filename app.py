@@ -483,7 +483,7 @@ with st.sidebar:
             
     else:
         st.markdown("## 🎵 Music Hub")
-        st.info("登入以儲存音樂庫")
+        st.info("請先登入才能儲存歌單哦！")
         u_name = st.text_input("帳號", key="login_name")
         u_pass = st.text_input("密碼", type="password", key="login_pass")
         
@@ -526,12 +526,12 @@ with st.sidebar:
                 else:
                     st.error("找不到帳號")
         
-        if st.button("忘記密碼?", use_container_width=True, type="secondary"):
+        if st.button("忘記密碼？", use_container_width=True, type="secondary"):
             reset_pw_dialog()
 
     st.markdown("---")
     
-    st.markdown("### 🎧 您的音樂庫")
+    st.markdown("### 🎧 您的歌單列表")
     
     with st.popover("➕ 建立歌單", use_container_width=True):
         new_pl_name = st.text_input("歌單名稱")
@@ -636,7 +636,7 @@ elif "歌單" in selected_tab:
     
     h1, h2, h3, h4 = st.columns([0.5, 4, 1.5, 1.5]) 
     h1.caption("#")
-    h2.caption("標題")
+    h2.caption("曲目")
     h3.caption("專輯")
     h4.caption("操作")
     
@@ -667,7 +667,7 @@ elif "歌單" in selected_tab:
 
 # 3. AI 顧問
 elif "AI" in selected_tab or "助理" in selected_tab:
-    st.markdown("### 🤖 AI DJ")
+    st.markdown("### 🤖 音樂小幫手")
     
     with st.container(border=True):
         with st.form("chat_form", clear_on_submit=True):
@@ -772,7 +772,7 @@ elif "寵物" in selected_tab:
         
         with st.container(border=True):
             st.markdown("### 您的心情寵物")
-            pet_type = st.selectbox("種類", ["貓咪 🐱", "狗狗 🐶"], index=0 if pet_data['type']=='cat' else 1)
+            pet_type = st.selectbox("選擇動物", ["貓咪 🐱", "狗狗 🐶"], index=0 if pet_data['type']=='cat' else 1)
             
             new_type_key = "cat" if "貓" in pet_type else "dog"
             if new_type_key != pet_data["type"]:
@@ -784,11 +784,11 @@ elif "寵物" in selected_tab:
             if energy < 30: st.error("我餓了...")
             
             st.markdown("---")
-            st.markdown("#### 每日任務")
+            st.markdown("#### 已解鎖的任務")
             p_done = pet_data['daily_play_count'] >= 1
             a_done = pet_data['daily_add_count'] >= 1
-            st.markdown(f"{'✅' if p_done else '⬜'} 播放一首歌 (+10)")
-            st.markdown(f"{'✅' if a_done else '⬜'} 新增一首歌 (+20)")
+            st.markdown(f"{'✅' if p_done else '⬜'} 播放一首歌（+10）")
+            st.markdown(f"{'✅' if a_done else '⬜'} 新增一首歌（+20）")
 
 # === 底部播放器 (V12：修復 AI 推薦來源顯示 + 播放不中斷) ===
 if st.session_state.current_playing:
@@ -827,7 +827,7 @@ if st.session_state.current_playing:
         found_in_ai = False
         for msg in st.session_state.chat_history:
             if 'songs' in msg:
-                s_name, p_ids = get_playlist_from_list(msg['songs'], "✨ AI 推薦")
+                s_name, p_ids = get_playlist_from_list(msg['songs'], "推薦歌曲")
                 if s_name:
                     source_name, playlist_ids = s_name, p_ids
                     found_in_ai = True
