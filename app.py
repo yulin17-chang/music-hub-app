@@ -36,7 +36,6 @@ def get_default_user_data(password_hash=""):
         "playlists": {"已按讚的歌曲": []}, 
         "favorites": {},              
         "chat_history": [],
-        # 修正重點：初始能量改為 0
         "pet_data": {"energy": 0, "last_update": time.time(), "type": "cat", "daily_play_count": 0, "daily_add_count": 0, "claimed_tasks": []}
     }
 
@@ -104,14 +103,38 @@ def guess_genre(title):
 
 def search_music(query, limit=10):
     try:
+        # 修正策略：混合搜尋
+        # 1. 先嘗試搜尋「歌曲 (Songs)」
         results = yt.search(query, filter='songs', limit=limit)
+        
+        # 2. 如果結果太少（少於 5 首），可能是 MV 或翻唱，擴大搜尋「影片 (Videos)」
+        if len(results) < 5:
+            video_results = yt.search(query, filter='videos', limit=limit)
+            results.extend(video_results)
+            
         songs = []
+        seen_ids = set() # 用來過濾重複的歌曲
+        
         for track in results:
             if 'videoId' not in track: continue
+            if track['videoId'] in seen_ids: continue # 避免重複
+            
+            seen_ids.add(track['videoId'])
+            
             title = track['title']
-            artists = ", ".join([a['name'] for a in track['artists']])
-            thumbnail = track['thumbnails'][-1]['url'] if track['thumbnails'] else ""
-            album_name = track.get('album', {}).get('name', 'Single')
+            # 處理藝人欄位 (Video 類型的結構可能略有不同)
+            artists = ", ".join([a['name'] for a in track.get('artists', [])])
+            
+            # 處理縮圖
+            thumbnails = track.get('thumbnails', [])
+            thumbnail = thumbnails[-1]['url'] if thumbnails else ""
+            
+            # 處理專輯 (Video 通常沒有專輯，給個預設值)
+            if 'album' in track and track['album']:
+                album_name = track['album'].get('name', 'Single')
+            else:
+                album_name = 'Video / Single'
+
             songs.append({
                 "id": track['videoId'],
                 "title": title,
@@ -124,8 +147,11 @@ def search_music(query, limit=10):
                 "genre": guess_genre(title),
                 "year": "Unknown"
             })
-        return songs
-    except Exception:
+        
+        # 只回傳前 N 筆，避免列表過長
+        return songs[:limit]
+    except Exception as e:
+        print(f"Search Error: {e}")
         return []
 
 def ai_recommend_songs(user_mood):
@@ -357,7 +383,6 @@ def inject_spotify_css():
             color: #FFFFFF !important;
         }}
         
-        /* 修正重點：隱藏 Radio Button 的圓點，讓它看起來像純膠囊按鈕 */
         div[role="radiogroup"] label > div:first-child {{
             display: none !important;
         }}
@@ -458,7 +483,7 @@ with st.sidebar:
             
     else:
         st.markdown("## 🎵 Music Hub")
-        st.info("請先登入才能儲存歌單哦！")
+        st.info("登入以儲存音樂庫")
         u_name = st.text_input("帳號", key="login_name")
         u_pass = st.text_input("密碼", type="password", key="login_pass")
         
@@ -506,7 +531,7 @@ with st.sidebar:
 
     st.markdown("---")
     
-    st.markdown("### 🎧 您的歌單列表")
+    st.markdown("### 🎧 您的音樂庫")
     
     with st.popover("➕ 建立歌單", use_container_width=True):
         new_pl_name = st.text_input("歌單名稱")
@@ -575,6 +600,9 @@ if "首頁" in selected_tab or "搜尋" in selected_tab:
                 with c4:
                     if st.button("➕", key=f"add_s_{song['id']}"):
                         add_to_playlist(song)
+    # 修正：新增無結果提示
+    elif query:
+        st.warning(f"找不到關於「{query}」的歌曲，試試看其他關鍵字？", icon="🙈")
 
 # 2. 目前歌單
 elif "歌單" in selected_tab:
@@ -639,7 +667,7 @@ elif "歌單" in selected_tab:
 
 # 3. AI 顧問
 elif "AI" in selected_tab or "助理" in selected_tab:
-    st.markdown("### 🤖 音樂小幫手")
+    st.markdown("### 🤖 AI DJ")
     
     with st.container(border=True):
         with st.form("chat_form", clear_on_submit=True):
@@ -744,7 +772,7 @@ elif "寵物" in selected_tab:
         
         with st.container(border=True):
             st.markdown("### 您的心情寵物")
-            pet_type = st.selectbox("選擇動物", ["貓咪 🐱", "狗狗 🐶"], index=0 if pet_data['type']=='cat' else 1)
+            pet_type = st.selectbox("種類", ["貓咪 🐱", "狗狗 🐶"], index=0 if pet_data['type']=='cat' else 1)
             
             new_type_key = "cat" if "貓" in pet_type else "dog"
             if new_type_key != pet_data["type"]:
@@ -752,11 +780,11 @@ elif "寵物" in selected_tab:
                 save_current_user_data()
                 st.rerun()
             
-            st.progress(energy/100, text=f"能量： {energy}%")
+            st.progress(energy/100, text=f"能量: {energy}%")
             if energy < 30: st.error("我餓了...")
             
             st.markdown("---")
-            st.markdown("#### 已解鎖的任務")
+            st.markdown("#### 每日任務")
             p_done = pet_data['daily_play_count'] >= 1
             a_done = pet_data['daily_add_count'] >= 1
             st.markdown(f"{'✅' if p_done else '⬜'} 播放一首歌 (+10)")
@@ -799,7 +827,7 @@ if st.session_state.current_playing:
         found_in_ai = False
         for msg in st.session_state.chat_history:
             if 'songs' in msg:
-                s_name, p_ids = get_playlist_from_list(msg['songs'], "推薦歌曲")
+                s_name, p_ids = get_playlist_from_list(msg['songs'], "✨ AI 推薦")
                 if s_name:
                     source_name, playlist_ids = s_name, p_ids
                     found_in_ai = True
