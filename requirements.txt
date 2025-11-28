@@ -3,3 +3,4 @@ pandas
 ytmusicapi
 Pillow
 youtube-search-python
+youtube-search
