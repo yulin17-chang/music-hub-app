@@ -6,6 +6,8 @@ import json
 import os
 import time
 from ytmusicapi import YTMusic
+# 新增：引入 YouTube 本體搜尋庫，解決雲端 IP 搜尋不到的問題
+from youtubesearchpython import VideosSearch 
 import datetime
 import base64
 import uuid
@@ -22,7 +24,6 @@ st.set_page_config(page_title="Music Hub", page_icon="🎵", layout="wide")
 
 @st.cache_resource
 def get_ytmusic():
-    # 修正：ytmusicapi 要求的繁體中文代碼是 zh_TW (底線)，不是 zh-TW (連字號)
     return YTMusic(language='zh_TW')
 
 yt = get_ytmusic()
@@ -103,49 +104,34 @@ def guess_genre(title):
     return "Pop"
 
 def search_music(query, limit=10):
+    """
+    V17 雙引擎搜尋：
+    1. 先用 YTMusic 搜 (品質最好)
+    2. 如果結果太少或搜不到，改用 YouTube 本體搜尋 (IP 容忍度高，什麼都搜得到)
+    """
+    songs = []
+    seen_ids = set() 
+
+    # --- 引擎 1: YouTube Music API ---
     try:
-        # V16 修正策略：三段式地毯搜尋 (解決雲端 IP 搜尋不到的問題)
-        
-        all_raw_results = []
-        
-        # 1. 嘗試搜尋「歌曲 (Songs)」- 最精準
-        try:
-            song_results = yt.search(query, filter='songs', limit=limit)
-            all_raw_results.extend(song_results)
-        except: pass
-        
-        # 2. 嘗試搜尋「影片 (Videos)」- 涵蓋 MV 與翻唱
-        try:
+        # 先嘗試搜尋歌曲
+        music_results = yt.search(query, filter='songs', limit=limit)
+        # 如果歌曲太少，追加搜尋影片
+        if len(music_results) < 3:
             video_results = yt.search(query, filter='videos', limit=limit)
-            all_raw_results.extend(video_results)
-        except: pass
-        
-        # 3. 嘗試「通用搜尋 (General)」- 什麼都搜，補漏網之魚
-        # 如果前兩者加起來太少，就啟動這一步
-        if len(all_raw_results) < 5:
-            try:
-                general_results = yt.search(query, limit=limit)
-                # 這裡要過濾，因為通用搜尋可能包含藝人、歌單等不包含 videoId 的項目
-                all_raw_results.extend([r for r in general_results if 'videoId' in r])
-            except: pass
+            music_results.extend(video_results)
             
-        songs = []
-        seen_ids = set() # 用來過濾重複
-        
-        for track in all_raw_results:
+        for track in music_results:
             if 'videoId' not in track: continue
-            if track['videoId'] in seen_ids: continue 
+            if track['videoId'] in seen_ids: continue
             
             seen_ids.add(track['videoId'])
             
-            title = track['title']
-            
-            # 處理藝人欄位 (結構可能不同)
+            # 處理藝人
             artists_list = track.get('artists', [])
             if artists_list:
                 artists = ", ".join([a['name'] for a in artists_list])
             else:
-                # 有些 Video 類型的結構是在 'authors' 或直接字串，這裡做 fallback
                 artists = "Unknown Artist"
 
             # 處理縮圖
@@ -153,30 +139,47 @@ def search_music(query, limit=10):
             thumbnail = thumbnails[-1]['url'] if thumbnails else ""
             
             # 處理專輯
-            if 'album' in track and track['album']:
-                album_name = track['album'].get('name', 'Single')
-            else:
-                album_name = 'Video / Single'
+            album_name = track.get('album', {}).get('name', 'Single') if 'album' in track else 'Single'
 
             songs.append({
                 "id": track['videoId'],
-                "title": title,
+                "title": track['title'],
                 "artist": artists,
                 "album": album_name,
-                "duration": track.get('duration', '--:--'),
                 "thumbnail": thumbnail,
-                "link": f"https://www.youtube.com/watch?v={track['videoId']}",
-                "lang": detect_language(title + " " + artists),
-                "genre": guess_genre(title),
-                "year": "Unknown"
+                "genre": guess_genre(track['title'])
             })
-        
-        # 回傳前 N 筆
-        return songs[:limit]
     except Exception as e:
-        # 在雲端除錯時很有用，但在生產環境可以註解掉
-        print(f"Search Error: {e}")
-        return []
+        print(f"YTMusic Error: {e}")
+
+    # --- 引擎 2: YouTube Search (Fallback) ---
+    # 如果第一階段結果少於 5 個，就啟動備援引擎
+    if len(songs) < 5:
+        try:
+            # 這是去搜 YouTube 主站，通常不會被 IP 擋
+            videos_search = VideosSearch(query, limit=limit)
+            yt_results = videos_search.result()['result']
+            
+            for video in yt_results:
+                if video['id'] in seen_ids: continue
+                seen_ids.add(video['id'])
+                
+                # 轉換格式
+                artist_name = video.get('channel', {}).get('name', 'YouTube')
+                thumb = video.get('thumbnails', [{}])[0].get('url', '')
+                
+                songs.append({
+                    "id": video['id'],
+                    "title": video['title'],
+                    "artist": artist_name,
+                    "album": "YouTube Video", # 來自 YouTube 的通常沒有專輯資訊
+                    "thumbnail": thumb,
+                    "genre": guess_genre(video['title'])
+                })
+        except Exception as e:
+            print(f"YouTube Search Error: {e}")
+
+    return songs[:limit]
 
 def ai_recommend_songs(user_mood):
     mood_keywords = {

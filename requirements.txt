@@ -1,5 +1,5 @@
 streamlit
 pandas
 ytmusicapi
-matplotlib
 Pillow
+youtube-search-python
