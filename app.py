@@ -577,7 +577,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # 1. 首頁 (搜尋)
 if "首頁" in selected_tab or "搜尋" in selected_tab:
-    query = st.text_input("想播放什麼內容？", placeholder="藝人、歌曲或 Podcast", label_visibility="collapsed")
+    query = st.text_input("想播放什麼內容？", placeholder="藝人、歌曲或專輯", label_visibility="collapsed")
     
     if query:
         with st.spinner("搜尋中..."):
