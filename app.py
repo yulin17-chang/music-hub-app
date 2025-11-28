@@ -22,7 +22,8 @@ st.set_page_config(page_title="Music Hub", page_icon="🎵", layout="wide")
 
 @st.cache_resource
 def get_ytmusic():
-    return YTMusic()
+    # 修正：ytmusicapi 要求的繁體中文代碼是 zh_TW (底線)，不是 zh-TW (連字號)
+    return YTMusic(language='zh_TW')
 
 yt = get_ytmusic()
 DATA_FILE = 'music_library.json'
@@ -103,33 +104,55 @@ def guess_genre(title):
 
 def search_music(query, limit=10):
     try:
-        # 修正策略：混合搜尋
-        # 1. 先嘗試搜尋「歌曲 (Songs)」
-        results = yt.search(query, filter='songs', limit=limit)
+        # V16 修正策略：三段式地毯搜尋 (解決雲端 IP 搜尋不到的問題)
         
-        # 2. 如果結果太少（少於 5 首），可能是 MV 或翻唱，擴大搜尋「影片 (Videos)」
-        if len(results) < 5:
+        all_raw_results = []
+        
+        # 1. 嘗試搜尋「歌曲 (Songs)」- 最精準
+        try:
+            song_results = yt.search(query, filter='songs', limit=limit)
+            all_raw_results.extend(song_results)
+        except: pass
+        
+        # 2. 嘗試搜尋「影片 (Videos)」- 涵蓋 MV 與翻唱
+        try:
             video_results = yt.search(query, filter='videos', limit=limit)
-            results.extend(video_results)
+            all_raw_results.extend(video_results)
+        except: pass
+        
+        # 3. 嘗試「通用搜尋 (General)」- 什麼都搜，補漏網之魚
+        # 如果前兩者加起來太少，就啟動這一步
+        if len(all_raw_results) < 5:
+            try:
+                general_results = yt.search(query, limit=limit)
+                # 這裡要過濾，因為通用搜尋可能包含藝人、歌單等不包含 videoId 的項目
+                all_raw_results.extend([r for r in general_results if 'videoId' in r])
+            except: pass
             
         songs = []
-        seen_ids = set() # 用來過濾重複的歌曲
+        seen_ids = set() # 用來過濾重複
         
-        for track in results:
+        for track in all_raw_results:
             if 'videoId' not in track: continue
-            if track['videoId'] in seen_ids: continue # 避免重複
+            if track['videoId'] in seen_ids: continue 
             
             seen_ids.add(track['videoId'])
             
             title = track['title']
-            # 處理藝人欄位 (Video 類型的結構可能略有不同)
-            artists = ", ".join([a['name'] for a in track.get('artists', [])])
             
+            # 處理藝人欄位 (結構可能不同)
+            artists_list = track.get('artists', [])
+            if artists_list:
+                artists = ", ".join([a['name'] for a in artists_list])
+            else:
+                # 有些 Video 類型的結構是在 'authors' 或直接字串，這裡做 fallback
+                artists = "Unknown Artist"
+
             # 處理縮圖
             thumbnails = track.get('thumbnails', [])
             thumbnail = thumbnails[-1]['url'] if thumbnails else ""
             
-            # 處理專輯 (Video 通常沒有專輯，給個預設值)
+            # 處理專輯
             if 'album' in track and track['album']:
                 album_name = track['album'].get('name', 'Single')
             else:
@@ -148,9 +171,10 @@ def search_music(query, limit=10):
                 "year": "Unknown"
             })
         
-        # 只回傳前 N 筆，避免列表過長
+        # 回傳前 N 筆
         return songs[:limit]
     except Exception as e:
+        # 在雲端除錯時很有用，但在生產環境可以註解掉
         print(f"Search Error: {e}")
         return []
 
@@ -483,7 +507,7 @@ with st.sidebar:
             
     else:
         st.markdown("## 🎵 Music Hub")
-        st.info("請先登入才能儲存歌單哦！")
+        st.info("登入以儲存音樂庫")
         u_name = st.text_input("帳號", key="login_name")
         u_pass = st.text_input("密碼", type="password", key="login_pass")
         
@@ -526,12 +550,12 @@ with st.sidebar:
                 else:
                     st.error("找不到帳號")
         
-        if st.button("忘記密碼？", use_container_width=True, type="secondary"):
+        if st.button("忘記密碼?", use_container_width=True, type="secondary"):
             reset_pw_dialog()
 
     st.markdown("---")
     
-    st.markdown("### 🎧 您的歌單列表")
+    st.markdown("### 🎧 您的音樂庫")
     
     with st.popover("➕ 建立歌單", use_container_width=True):
         new_pl_name = st.text_input("歌單名稱")
@@ -600,7 +624,6 @@ if "首頁" in selected_tab or "搜尋" in selected_tab:
                 with c4:
                     if st.button("➕", key=f"add_s_{song['id']}"):
                         add_to_playlist(song)
-    # 修正：新增無結果提示
     elif query:
         st.warning(f"找不到關於「{query}」的歌曲，試試看其他關鍵字？", icon="🙈")
 
@@ -636,7 +659,7 @@ elif "歌單" in selected_tab:
     
     h1, h2, h3, h4 = st.columns([0.5, 4, 1.5, 1.5]) 
     h1.caption("#")
-    h2.caption("曲目")
+    h2.caption("標題")
     h3.caption("專輯")
     h4.caption("操作")
     
@@ -667,7 +690,7 @@ elif "歌單" in selected_tab:
 
 # 3. AI 顧問
 elif "AI" in selected_tab or "助理" in selected_tab:
-    st.markdown("### 🤖 音樂小幫手")
+    st.markdown("### 🤖 AI DJ")
     
     with st.container(border=True):
         with st.form("chat_form", clear_on_submit=True):
@@ -772,7 +795,7 @@ elif "寵物" in selected_tab:
         
         with st.container(border=True):
             st.markdown("### 您的心情寵物")
-            pet_type = st.selectbox("選擇動物", ["貓咪 🐱", "狗狗 🐶"], index=0 if pet_data['type']=='cat' else 1)
+            pet_type = st.selectbox("種類", ["貓咪 🐱", "狗狗 🐶"], index=0 if pet_data['type']=='cat' else 1)
             
             new_type_key = "cat" if "貓" in pet_type else "dog"
             if new_type_key != pet_data["type"]:
@@ -784,11 +807,11 @@ elif "寵物" in selected_tab:
             if energy < 30: st.error("我餓了...")
             
             st.markdown("---")
-            st.markdown("#### 已解鎖的任務")
+            st.markdown("#### 每日任務")
             p_done = pet_data['daily_play_count'] >= 1
             a_done = pet_data['daily_add_count'] >= 1
-            st.markdown(f"{'✅' if p_done else '⬜'} 播放一首歌（+10）")
-            st.markdown(f"{'✅' if a_done else '⬜'} 新增一首歌（+20）")
+            st.markdown(f"{'✅' if p_done else '⬜'} 播放一首歌 (+10)")
+            st.markdown(f"{'✅' if a_done else '⬜'} 新增一首歌 (+20)")
 
 # === 底部播放器 (V12：修復 AI 推薦來源顯示 + 播放不中斷) ===
 if st.session_state.current_playing:
@@ -827,7 +850,7 @@ if st.session_state.current_playing:
         found_in_ai = False
         for msg in st.session_state.chat_history:
             if 'songs' in msg:
-                s_name, p_ids = get_playlist_from_list(msg['songs'], "推薦歌曲")
+                s_name, p_ids = get_playlist_from_list(msg['songs'], "✨ AI 推薦")
                 if s_name:
                     source_name, playlist_ids = s_name, p_ids
                     found_in_ai = True
