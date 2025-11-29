@@ -51,7 +51,9 @@ def init_session_state():
         "current_playlist": "已按讚的歌曲",
         "search_results": [],
         "current_playing": None,
+        "active_queue": [], # <--- 新增：用來儲存當前播放的順序 (正常或隨機)
         "play_context": "search",
+        "play_trigger": 0, 
         "new_playlist_name": "",
         "main_nav": "🔍 搜尋歌曲",
         "inited": True
@@ -275,6 +277,8 @@ def add_to_playlist(song, playlist_name=None):
 def play_song(song_id, context="search"):
     st.session_state.current_playing = song_id
     st.session_state.play_context = context
+    # 更新觸發器，告訴前端這是一個新的播放請求
+    st.session_state.play_trigger = str(time.time()) 
     if st.session_state.current_user:
         check_and_claim_task('play')
 
@@ -622,14 +626,29 @@ elif "歌單" in selected_tab:
     
     c_p1, c_p2, c_p3 = st.columns([1, 1, 4])
     with c_p1:
+        # [正常播放]：active_queue 就是原始歌單
         if st.button("▶ 播放", type="primary", use_container_width=True, key="btn_play_all"):
             if songs: 
+                st.session_state.active_queue = songs[:] 
                 play_song(songs[0]['id'], context="playlist")
                 st.rerun()
     with c_p2:
+        # [隨機播放]：生成隨機順序存入 active_queue
         if st.button("🔀 隨機", type="primary", use_container_width=True, key="btn_shuffle"):
             if songs: 
-                play_song(random.choice(songs)['id'], context="playlist")
+                # 1. 隨機選一首當開頭
+                start_song = random.choice(songs)
+                # 2. 複製並打亂清單
+                shuffled = songs[:]
+                random.shuffle(shuffled)
+                # 3. 優化：把開頭這首移到第一個 (確保點擊即播放該首)
+                if start_song in shuffled:
+                    shuffled.remove(start_song)
+                    shuffled.insert(0, start_song)
+                
+                # 4. 設定為當前佇列
+                st.session_state.active_queue = shuffled
+                play_song(start_song['id'], context="playlist")
                 st.rerun()
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -656,7 +675,9 @@ elif "歌單" in selected_tab:
             with c4:
                 b1, b2 = st.columns([1, 1], gap="small")
                 with b1:
+                    # [單曲播放]：點擊列表中的單曲，視為正常順序播放
                     if st.button("▶", key=f"pl_p_{idx}_{pl_name}"):
+                        st.session_state.active_queue = songs[:] # 重置為正常順序
                         play_song(song['id'], context="playlist")
                         st.rerun()
                 with b2:
@@ -790,68 +811,82 @@ elif "寵物" in selected_tab:
             st.markdown(f"{'✅' if p_done else '⬜'} 播放一首歌（+10）")
             st.markdown(f"{'✅' if a_done else '⬜'} 新增一首歌（+20）")
 
-# === 底部播放器 (V12：修復 AI 推薦來源顯示 + 播放不中斷) ===
+# === 底部播放器 (V13 改良版：支援真隨機佇列 + 原生 YouTube 介面) ===
 if st.session_state.current_playing:
     video_id = st.session_state.current_playing
     context = st.session_state.get('play_context', 'search')
+    play_trigger = st.session_state.get('play_trigger', '0')
     
     source_name = "未知來源"
     playlist_ids = []
     
-    def get_playlist_from_list(target_list, name_prefix):
-        for idx, s in enumerate(target_list):
-            if s['id'] == video_id:
-                remaining = target_list[idx+1:]
-                previous = target_list[:idx]
-                combined = remaining + previous + [s] 
-                p_ids = [u['id'] for u in combined[:50]]
-                return name_prefix, p_ids
-        return None, None
-
-    # A. 歌單
-    if context == 'playlist':
-        pl_name = st.session_state.current_playlist
-        pl_songs = st.session_state.playlists.get(pl_name, [])
-        s_name, p_ids = get_playlist_from_list(pl_songs, pl_name)
-        if s_name:
-            source_name, playlist_ids = s_name, p_ids
-    
-    # B. 搜尋
-    if not playlist_ids and context == 'search':
-        s_name, p_ids = get_playlist_from_list(st.session_state.search_results, "搜尋結果")
-        if s_name:
-            source_name, playlist_ids = s_name, p_ids
-            
-    # C. AI (修正重點：掃描歷史對話找出歌曲)
-    if not playlist_ids:
-        found_in_ai = False
-        for msg in st.session_state.chat_history:
-            if 'songs' in msg:
-                s_name, p_ids = get_playlist_from_list(msg['songs'], "推薦歌曲")
-                if s_name:
-                    source_name, playlist_ids = s_name, p_ids
-                    found_in_ai = True
-                    break
+    # --- 邏輯核心：決定播放清單的順序 ---
+    def get_playlist_ids():
+        # 1. 優先檢查是否有「排隊中」的順序 (Active Queue)
+        #    這包含了「隨機播放」打亂後的結果
+        queue = st.session_state.get('active_queue')
+        if queue and context == 'playlist':
+            # 確保當前播放的歌在佇列裡
+            if any(s['id'] == video_id for s in queue):
+                return [s['id'] for s in queue]
         
-    # D. Fallback (掃描所有可能)
+        # 2. 如果沒有 Active Queue (例如從搜尋結果播放)，則使用舊邏輯 (Context based)
+        #    這裡簡單處理：找出上下文列表
+        target_list = []
+        if context == 'playlist':
+            pl_name = st.session_state.current_playlist
+            target_list = st.session_state.playlists.get(pl_name, [])
+        elif context == 'search':
+            target_list = st.session_state.search_results
+        
+        # 如果找到了列表，產生一個以「當前歌曲」為首的輪替列表
+        # 這是為了讓 YouTube 知道接下來要播誰
+        if target_list:
+            for idx, s in enumerate(target_list):
+                if s['id'] == video_id:
+                    # 把列表重組，確保 video_id 是第一個，或是傳入整張列表
+                    # V13 原生做法是傳入整張列表比較穩
+                    return [s['id'] for s in target_list]
+        
+        return []
+
+    # 設定來源名稱
+    if context == 'playlist':
+        source_name = st.session_state.current_playlist
+    elif context == 'search':
+        source_name = "搜尋結果"
+    elif context == 'ai':
+        source_name = "推薦歌曲"
+        # AI 特殊處理：嘗試從歷史紀錄抓歌單 ID
+        for msg in st.session_state.chat_history:
+            if 'songs' in msg and any(s['id'] == video_id for s in msg['songs']):
+                playlist_ids = [s['id'] for s in msg['songs']]
+                break
+
+    # 執行獲取 ID
     if not playlist_ids:
-        pl_name = st.session_state.current_playlist
-        pl_songs = st.session_state.playlists.get(pl_name, [])
-        s_name, p_ids = get_playlist_from_list(pl_songs, pl_name)
-        if s_name:
-            source_name, playlist_ids = s_name, p_ids
-        else:
-            s_name, p_ids = get_playlist_from_list(st.session_state.search_results, "搜尋結果")
-            if s_name:
-                source_name, playlist_ids = s_name, p_ids
+        playlist_ids = get_playlist_ids()
 
-    # 參數生成
-    if playlist_ids:
-        playlist_str = ",".join(playlist_ids)
-        playlist_param = f"&playlist={playlist_str}"
-    else:
-        playlist_param = f"&playlist={video_id}"
+    # 如果還是空的，就只有自己
+    if not playlist_ids:
+        playlist_ids = [video_id]
 
+    # --- 參數生成 (V13 原生 URL 參數模式) ---
+    # YouTube 限制：playlist 參數不能太長 (URL長度限制)，取前 50 首
+    # 如果列表包含自己，確保自己在裡面
+    if len(playlist_ids) > 50:
+        # 簡單優化：嘗試截取 video_id 附近
+        try:
+            curr_idx = playlist_ids.index(video_id)
+            start = max(0, curr_idx - 10)
+            end = min(len(playlist_ids), start + 50)
+            playlist_ids = playlist_ids[start:end]
+        except:
+            playlist_ids = playlist_ids[:50]
+
+    playlist_str = ",".join(playlist_ids)
+    playlist_param = f"&playlist={playlist_str}"
+    
     loop_param = "&loop=1"
     safe_source = source_name.replace("'", "\\'")
 
@@ -865,6 +900,20 @@ if st.session_state.current_playing:
             var videoId = '{video_id}';
             var sourceName = '{safe_source}';
             var currentPlaylistParam = '{playlist_param}';
+            var currentTrigger = '{play_trigger}';
+            
+            var lastTrigger = sessionStorage.getItem('mh_play_trigger');
+            var isClosed = sessionStorage.getItem('mh_player_closed') === 'true';
+
+            var isNewRequest = (currentTrigger !== lastTrigger);
+
+            if (!isNewRequest && isClosed) {{ return; }}
+
+            if (isNewRequest) {{
+                sessionStorage.setItem('mh_play_trigger', currentTrigger);
+                sessionStorage.setItem('mh_player_closed', 'false');
+                isClosed = false;
+            }}
             
             var embedUrl = "https://www.youtube.com/embed/" + videoId + 
                            "?autoplay=1&controls=1&showinfo=0&modestbranding=1&enablejsapi=1&playsinline=1" + 
@@ -873,20 +922,11 @@ if st.session_state.current_playing:
             
             var playerHtml = `
                 <div style="
-                    position: fixed;
-                    bottom: 25px;
-                    right: 25px;
-                    width: 320px;
-                    background-color: #FFFFFF;
-                    border-radius: 20px;
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-                    z-index: 999999;
-                    display: flex;
-                    flex-direction: column;
-                    padding: 15px;
-                    border: 1px solid #E1BEE7;
-                    transition: all 0.3s ease;
-                    font-family: sans-serif;
+                    position: fixed; bottom: 25px; right: 25px; width: 320px;
+                    background-color: #FFFFFF; border-radius: 20px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 999999;
+                    display: flex; flex-direction: column; padding: 15px;
+                    border: 1px solid #E1BEE7; transition: all 0.3s ease; font-family: sans-serif;
                 " id="inner-player-box">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 0 5px;">
                         <div style="font-size: 0.95rem; font-weight: bold; color: #4A148C; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;">
@@ -895,50 +935,26 @@ if st.session_state.current_playing:
                         <div style="font-size: 0.8rem; color: #9C27B0; font-weight: bold;">播放中</div>
                     </div>
                     <div style="width: 100%; aspect-ratio: 16/9; border-radius: 12px; overflow: hidden; background: #000;">
-                        <iframe 
-                            width="100%" 
-                            height="100%" 
-                            src="` + embedUrl + `" 
-                            frameborder="0" 
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                            allowfullscreen>
-                        </iframe>
+                        <iframe width="100%" height="100%" src="` + embedUrl + `" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
                     </div>
-                    <button onclick="document.getElementById('` + containerId + `').remove()" style="
-                        position: absolute;
-                        top: -10px;
-                        left: -10px;
-                        background: #F3E5F5;
-                        border: 1px solid #E1BEE7;
-                        border-radius: 50%;
-                        width: 28px;
-                        height: 28px;
-                        cursor: pointer;
-                        color: #4A148C;
-                        font-weight: bold;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-size: 16px;
-                        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-                    ">×</button>
+                    <button onclick="document.getElementById('` + containerId + `').remove(); sessionStorage.setItem('mh_player_closed', 'true');" 
+                        style="position: absolute; top: -10px; left: -10px; background: #F3E5F5; border: 1px solid #E1BEE7; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; color: #4A148C; font-weight: bold; display: flex; align-items: center; justify-content: center; font-size: 16px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">×</button>
                 </div>
             `;
 
             if (existingContainer) {{
                 var currentVid = existingContainer.getAttribute('data-video-id');
-                var oldPlaylist = existingContainer.getAttribute('data-playlist-param');
-                
-                if (currentVid !== videoId || oldPlaylist !== currentPlaylistParam) {{
+                // V13 邏輯：只有 Video ID 改變時才刷新
+                // 這意味著：隨機播放點下去的那一瞬間，因為 ID 變了，所以會刷新，佇列也會更新為隨機佇列
+                // 之後如果是「新增歌曲」，因為 ID 沒變，所以佇列不會變 (符合您的不中斷需求)
+                if (currentVid !== videoId) {{
                     existingContainer.innerHTML = playerHtml;
                     existingContainer.setAttribute('data-video-id', videoId);
-                    existingContainer.setAttribute('data-playlist-param', currentPlaylistParam);
                 }}
             }} else {{
                 var newDiv = parentDoc.createElement('div');
                 newDiv.id = containerId;
                 newDiv.setAttribute('data-video-id', videoId);
-                newDiv.setAttribute('data-playlist-param', currentPlaylistParam);
                 newDiv.innerHTML = playerHtml;
                 parentDoc.body.appendChild(newDiv);
             }}
@@ -948,10 +964,4 @@ if st.session_state.current_playing:
     components.html(js_code, height=0)
 
 else:
-    js_clear = """
-    <script>
-        var container = window.parent.document.getElementById('persistent-player-container');
-        if (container) { container.remove(); }
-    </script>
-    """
-    components.html(js_clear, height=0)
+    pass
